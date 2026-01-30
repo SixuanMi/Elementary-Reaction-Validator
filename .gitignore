@@ -1,0 +1,25 @@
+# Test outputs
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Test directories (optional - uncomment if you don't want to commit test runs)
+ash_xtb_smoketest_runs/
+orca_test/
+
+# Temporary files
+*.tmp
+*.swp
+*~
+
+# Output files (keep examples but ignore others)
+# *.pkl
+# *.json
+
+# Claude Code
+ASH_XTB_WORKFLOW_NOTES.md
+CHANGELOG.md
+CONFIG_README.md

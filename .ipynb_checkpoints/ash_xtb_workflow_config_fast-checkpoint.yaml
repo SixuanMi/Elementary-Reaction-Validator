@@ -1,0 +1,44 @@
+# ASH xTB Workflow Configuration - Fast Test Mode
+# This config uses faster settings for quick testing
+
+inputs:
+  reactant: "xyz/reactant.xyz"
+  product: "xyz/product.xyz"
+  ts_guess: "xyz/ts_ini.xyz"
+
+system:
+  charge: 0
+  mult: 1
+
+xtb:
+  method: "GFN2"
+  runmode: "inputfile"
+  cores: 1
+
+neb:
+  images: 5  # Fewer images for faster testing
+  maxiter: 50  # Fewer iterations
+  interpolation: "IDPP"
+  runmode: "serial"
+  cores: 1
+
+optimization:
+  maxiter: 100  # Reduced for testing
+  convergence_setting: "GAU_TIGHT"
+
+tsopt:
+  maxiter: 100  # Reduced for testing
+  hessian: "xtb"
+
+frequency:
+  npoint: 1  # Faster (less accurate)
+  runmode: "serial"
+  cores: 1
+  imag_threshold: 20.0
+
+irc:
+  maxiter: 100  # Reduced for testing
+
+output:
+  base_dir: "ash_xtb_smoketest_runs"
+  printlevel: 1
