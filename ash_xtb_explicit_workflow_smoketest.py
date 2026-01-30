@@ -282,69 +282,98 @@ def _write_workflow_summary(run_dir: Path, summary: Dict[str, Any], stages: List
     return out_path
 
 
+# ============================================================================
+# Molecular Matcher Module (cross-isomorphism with multiple methods)
+# ============================================================================
+
+# Import the modular molecular matchers
+# This provides pluggable endpoint matching strategies:
+# - smiles_openbabel: OpenBabel SMILES comparison
+# - smiles_rdkit: RDKit SMILES comparison with multiple bond strategies
+# - graph_isomorphism: Pymatgen + NetworkX graph isomorphism
+# - rmsd: 3D RMSD structural comparison
+# - soap: SOAP descriptor similarity
+def _get_endpoint_matcher(endpoint_match_config: Dict[str, Any]):
+    """
+    Create a molecular matcher instance from config.
+
+    Args:
+        endpoint_match_config: Config dict with 'method' and method-specific settings
+
+    Returns:
+        MoleculeMatcher instance or None if method not found
+    """
+    from molecular_matchers import create_matcher_from_config
+
+    return create_matcher_from_config(endpoint_match_config)
+
+
+def _cross_isomorphism(
+    true_r: Path,
+    true_p: Path,
+    irc_r: Path,
+    irc_p: Path,
+    matcher=None,
+) -> Dict[str, Any]:
+    """
+    Cross-compare endpoints using the configured molecular matcher.
+
+    This is a backward-compatible wrapper that uses the new modular matcher system.
+    If no matcher is provided, falls back to the default OpenBabel SMILES method.
+
+    Args:
+        true_r: Original reactant XYZ file
+        true_p: Original product XYZ file
+        irc_r: IRC backward endpoint XYZ file
+        irc_p: IRC forward endpoint XYZ file
+        matcher: Optional MoleculeMatcher instance (if None, uses OpenBabel default)
+
+    Returns:
+        Dict with match results
+    """
+    # Use default OpenBabel matcher if none provided
+    if matcher is None:
+        from molecular_matchers import OpenBabelSmilesMatcher
+        matcher = OpenBabelSmilesMatcher()
+
+    # Run cross-isomorphism check
+    result = matcher.cross_isomorphism(true_r, true_p, irc_r, irc_p)
+    result_dict = result.to_dict()
+
+    # Flatten metadata for backward compatibility (only for SMILES methods)
+    # For other methods, keep metadata structured to avoid duplication
+    metadata = result_dict.get("metadata", {})
+
+    if "smiles_openbabel" in result.method or "smiles_rdkit" in result.method:
+        # For SMILES, flatten smi_* fields to top level for convenience
+        result_dict["smi_true_r"] = metadata.get("sig_true_r", "")
+        result_dict["smi_true_p"] = metadata.get("sig_true_p", "")
+        result_dict["smi_irc_r"] = metadata.get("sig_irc_r", "")
+        result_dict["smi_irc_p"] = metadata.get("sig_irc_p", "")
+        # Remove from metadata to avoid duplication
+        for key in ["sig_true_r", "sig_true_p", "sig_irc_r", "sig_irc_p"]:
+            metadata.pop(key, None)
+
+    # For other methods, keep metadata structured (no flattening)
+    # This keeps the JSON clean and avoids duplication
+
+    return result_dict
+
+
+# Legacy function kept for backward compatibility
 def _canonical_smiles_from_xyz(xyz_file: Path) -> str:
     """
-    Best-effort XYZ -> canonical SMILES (incl. stereo) using OpenBabel/pybel.
-    Returns "" on failure (missing deps or conversion error).
+    Legacy function: Best-effort XYZ -> canonical SMILES using OpenBabel/pybel.
+    Returns "" on failure.
+
+    Note: This is kept for backward compatibility.
+    New code should use the molecular_matchers module directly.
     """
-    try:
-        from openbabel import pybel  # type: ignore
-    except Exception:
-        return ""
+    from molecular_matchers import OpenBabelSmilesMatcher
 
-    try:
-        mol = next(pybel.readfile("xyz", str(xyz_file)))
-        return mol.write("can").strip().split()[0]
-    except Exception:
-        return ""
-
-
-def _cross_isomorphism(true_r: Path, true_p: Path, irc_r: Path, irc_p: Path) -> Dict[str, Any]:
-    """
-    Cross-compare endpoints via canonical SMILES (incl. stereo), mirroring do_orca_validation.py logic.
-    """
-    smi_true_r = _canonical_smiles_from_xyz(true_r)
-    smi_true_p = _canonical_smiles_from_xyz(true_p)
-    smi_irc_r = _canonical_smiles_from_xyz(irc_r)
-    smi_irc_p = _canonical_smiles_from_xyz(irc_p)
-
-    if not all([smi_true_r, smi_true_p, smi_irc_r, smi_irc_p]):
-        return {
-            "performed": True,
-            "success": False,
-            "endpoint_match": "Error",
-            "smi_true_r": smi_true_r,
-            "smi_true_p": smi_true_p,
-            "smi_irc_r": smi_irc_r,
-            "smi_irc_p": smi_irc_p,
-        }
-
-    matches = (
-        smi_true_r == smi_irc_r,
-        smi_true_p == smi_irc_p,
-        smi_true_r == smi_irc_p,
-        smi_true_p == smi_irc_r,
-    )
-    rxn_status = "Conformational change" if smi_irc_r == smi_irc_p else "Chemical reaction"
-
-    if matches in [(True, True, False, False), (False, False, True, True)]:
-        endpoint_match = "2-end match"
-    elif any(matches):
-        endpoint_match = "1-end match"
-    else:
-        endpoint_match = "No match"
-
-    return {
-        "performed": True,
-        "success": True,
-        "endpoint_match": endpoint_match,
-        "matches": matches,
-        "rxn_status": rxn_status,
-        "smi_true_r": smi_true_r,
-        "smi_true_p": smi_true_p,
-        "smi_irc_r": smi_irc_r,
-        "smi_irc_p": smi_irc_p,
-    }
+    matcher = OpenBabelSmilesMatcher()
+    result = matcher.compute_signature(xyz_file)
+    return result if result else ""
 
 
 def _read_xyz_elements_coords(xyz_path: Path) -> Tuple[List[str], np.ndarray]:
@@ -796,6 +825,9 @@ def _load_config_to_namespace(config: Dict[str, Any]) -> argparse.Namespace:
     args.imag_threshold = config["frequency"]["imag_threshold"]
 
     args.irc_maxiter = config["irc"]["maxiter"]
+
+    # Endpoint match configuration
+    args.endpoint_match_config = config.get("endpoint_match", {"method": "smiles_openbabel"})
 
     args.outdir = config["output"]["base_dir"]
     args.printlevel = config["output"]["printlevel"]
@@ -1518,7 +1550,7 @@ def main() -> int:
         )
         return _finalize(exit_code=2, stop_stage="08a_freq_irc_backward", stop_reason=stages[-1].error)
 
-    # --- Stage 9: Endpoint match check (canonical SMILES cross-isomorphism) ---
+    # --- Stage 9: Endpoint match check (modular molecular matcher) ---
     try:
         stage_dir = run_dir / "09_endpoint_match"
         with _pushd(stage_dir):
@@ -1530,7 +1562,23 @@ def main() -> int:
                 if not pth.exists():
                     raise FileNotFoundError(f"Missing required XYZ for endpoint match: {pth}")
 
-            match_res = _cross_isomorphism(true_r=r_opt, true_p=p_opt, irc_r=irc_b_opt, irc_p=irc_f_opt)
+            # Create matcher from config
+            endpoint_matcher = _get_endpoint_matcher(args.endpoint_match_config)
+            if endpoint_matcher is None:
+                print(f"[WARNING] Unknown endpoint_match method: {args.endpoint_match_config.get('method')}, falling back to OpenBabel SMILES")
+                from molecular_matchers import OpenBabelSmilesMatcher
+                endpoint_matcher = OpenBabelSmilesMatcher()
+
+            print(f"[INFO] Endpoint match method: {endpoint_matcher.name}")
+
+            # Run cross-isomorphism check
+            match_res = _cross_isomorphism(
+                true_r=r_opt,
+                true_p=p_opt,
+                irc_r=irc_b_opt,
+                irc_p=irc_f_opt,
+                matcher=endpoint_matcher,
+            )
             _write_text(stage_dir / "endpoint_match.json", json.dumps(match_res, indent=2, ensure_ascii=False))
 
             stage_ok = bool(match_res.get("success")) and match_res.get("endpoint_match") == "2-end match"

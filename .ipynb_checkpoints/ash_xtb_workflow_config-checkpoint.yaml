@@ -12,6 +12,8 @@ inputs:
 system:
   charge: 0
   mult: 1
+  temperature: 298.15  # Temperature in Kelvin for thermochemistry calculations
+  pressure: 1.0        # Pressure in atm for thermochemistry calculations
 
 # ============================================================================
 # Theory Settings - Two independent theory levels
@@ -22,7 +24,7 @@ system:
 # IMPORTANT: All these stages MUST use the same theory level for consistency
 main_theory:
   type: "xtb"  # xtb or orca
-  numcores: 32   # Number of cores for parallelization
+  numcores: 1   # Number of cores for parallelization
   printlevel: 1
 
   # xTB settings (only used when type=xtb)
@@ -96,6 +98,47 @@ frequency:
 # ============================================================================
 irc:
   maxiter: 200
+
+# ============================================================================
+# Endpoint Match (Stage 9) settings
+# ============================================================================
+# Molecular matching method for cross-isomorphism validation
+# Available methods:
+#   - smiles_openbabel: OpenBabel SMILES comparison (default)
+#   - smiles_rdkit: RDKit SMILES comparison with multiple bond strategies
+#   - graph_isomorphism: Pymatgen + NetworkX graph isomorphism
+#   - rmsd: 3D RMSD structural comparison
+#   - soap: SOAP descriptor similarity
+endpoint_match:
+  method: "smiles_openbabel"  # Choose matching method
+
+  # smiles_openbabel config (no parameters needed)
+  smiles_openbabel:
+
+  # smiles_rdkit config
+  smiles_rdkit:
+    atom_map: false  # Include atom map numbers in SMILES (AAM) for tracking atoms
+    all_hs_explicit: true  # true=explicit hydrogens, false=implicit hydrogens
+
+  # graph_isomorphism config
+  graph_isomorphism:
+    local_env: "OpenBabelNN"  # Local environment strategy (OpenBabelNN, CovalentBondNN, MinimumDistanceNN)
+
+  # rmsd config
+  rmsd:
+    threshold: 0.5         # RMSD threshold in Angstrom
+    allow_reorder: false    # Allow atom reordering (Hungarian algorithm)
+    heavy_only: false      # Compare only heavy atoms (ignore H)
+
+  # soap config
+  soap:
+    r_cut: 6.0                      # Cutoff radius in Angstrom
+    n_max: 8                        # Number of radial basis functions
+    l_max: 6                        # Maximum angular momentum
+    sigma: 1.0                      # Gaussian width
+    kernel_metric: "linear"         # "linear" or "rbf" for AverageKernel
+    kernel_gamma: null              # RBF gamma (null=auto, only for rbf metric)
+    threshold_similarity: 0.995     # Similarity threshold for match
 
 # ============================================================================
 # Output settings
