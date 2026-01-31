@@ -794,6 +794,7 @@ def _load_config_to_namespace(config: Dict[str, Any]) -> argparse.Namespace:
     args.neb_CI = config["neb"].get("CI", True)  # Default to True for backward compatibility
     args.neb_runmode = config["neb"]["runmode"]
     args.neb_cores = config["neb"]["cores"]
+    args.neb_use_ts_guess = config["neb"].get("use_ts_guess", True)  # Default to True
 
     args.opt_maxiter = config["optimization"]["maxiter"]
     args.convergence_setting = config["optimization"].get("convergence_setting", "ORCA")
@@ -856,9 +857,14 @@ def main() -> int:
     in_reactant = (repo_root / args.reactant).resolve() if not Path(args.reactant).is_absolute() else Path(args.reactant)
     in_product = (repo_root / args.product).resolve() if not Path(args.product).is_absolute() else Path(args.product)
     in_ts_guess = (repo_root / args.ts_guess).resolve() if not Path(args.ts_guess).is_absolute() else Path(args.ts_guess)
-    for p, label in [(in_reactant, "reactant"), (in_product, "product"), (in_ts_guess, "ts_guess")]:
+    # Validate input files
+    for p, label in [(in_reactant, "reactant"), (in_product, "product")]:
         if not p.exists():
             raise FileNotFoundError(f"Missing {label} xyz: {p}")
+
+    # TS guess is optional - only validate if use_ts_guess=true
+    if args.neb_use_ts_guess and not in_ts_guess.exists():
+        raise FileNotFoundError(f"Missing ts_guess xyz: {in_ts_guess} (required when neb.use_ts_guess=true)")
 
     ts_tag = time.strftime("%Y%m%d_%H%M%S")
     run_dir = (repo_root / args.outdir / f"run_{ts_tag}").resolve()
@@ -998,7 +1004,7 @@ def main() -> int:
         )
         return _finalize(exit_code=2, stop_stage="02_opt_product", stop_reason=stages[-1].error)
 
-    # --- Stage 3: CI-NEB with TS guess insertion ---
+    # --- Stage 3: CI-NEB with optional TS guess insertion ---
     try:
         stage_dir = run_dir / "03_neb"
         with _pushd(stage_dir):
@@ -1010,6 +1016,13 @@ def main() -> int:
             frag_r = Fragment(xyzfile=str(r_opt_xyz), charge=args.charge, mult=args.mult)
             frag_p = Fragment(xyzfile=str(p_opt_xyz), charge=args.charge, mult=args.mult)
 
+            # Prepare TS guess file based on configuration
+            ts_guess_file_param = None
+            if args.neb_use_ts_guess:
+                if not in_ts_guess.exists():
+                    raise FileNotFoundError(f"TS guess file not found: {in_ts_guess} (required when neb.use_ts_guess=true)")
+                ts_guess_file_param = str(in_ts_guess)
+
             res = NEB(
                 reactant=frag_r,
                 product=frag_p,
@@ -1018,7 +1031,7 @@ def main() -> int:
                 CI=args.neb_CI,
                 maxiter=args.neb_maxiter,
                 interpolation=args.neb_interpolation,
-                TS_guess_file=str(in_ts_guess),
+                TS_guess_file=ts_guess_file_param,
                 runmode=args.neb_runmode,
                 numcores=args.neb_cores,
                 charge=args.charge,

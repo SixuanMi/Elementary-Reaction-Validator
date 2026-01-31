@@ -1,7 +1,7 @@
 # ================================================================================
 # ASH Workflow Configuration
 # ================================================================================
-# Usage: python ash_xtb_explicit_workflow_smoketest.py --config config.yaml
+# Usage: python ash_workflow.py --config config.yaml
 #
 # All parameters must be specified in this config file.
 # Command-line parameter override is not supported.
@@ -9,14 +9,9 @@
 # Available theory types:
 #   - xtb: Semi-empirical tight-binding (GFN1/GFN2)
 #   - orca: DFT with various functionals
-#   - mace: Machine learning potential for molecules
-#   - fairchem: Universal ML potential for catalysis
-#   - dpa: Deep Potential Approximation with multitask support
-#
-# Environment requirements:
-#   - xtb/orca: ash-py310 (or any with ASH installed)
-#   - mace/fairchem: mace environment
-#   - dpa: dpa3 environment
+#   - mace
+#   - fairchem: UMA
+#   - dpa: DPA with multitask support
 # ================================================================================
 
 # ================================================================================
@@ -25,7 +20,9 @@
 inputs:
   reactant: "xyz/R.xyz"
   product: "xyz/P.xyz"
-  ts_guess: "xyz/TS_guess.xyz"
+  ts_guess: "xyz/TS_guess.xyz"   # Optional: TS guess for NEB initialization
+                                  # Only used when neb.use_ts_guess=true
+                                  # Can be omitted if neb.use_ts_guess=false
 
 # ================================================================================
 # System properties
@@ -121,7 +118,9 @@ neb_theory:
   # Choose theory type: xtb, orca, mace, fairchem, or dpa
   type: "xtb"
 
-  numcores: 8
+  numcores: 8                  # Number of cores for theory calculation (e.g., MACE model inference)
+                                # This controls parallelization WITHIN each NEB image
+                                # Applies to all theory types: xTB, ORCA, MACE, FairChem, DPA
   printlevel: 1
 
   # xTB settings (only used when type=xtb)
@@ -155,6 +154,12 @@ neb_theory:
 # ================================================================================
 # NEB (CI-NEB/CINEB) Settings
 # ================================================================================
+# IMPORTANT: Parallelization hierarchy (2 levels)
+#   Level 1: NEB images parallelization (controlled by neb.runmode and neb.cores)
+#   Level 2: Theory calculation parallelization (controlled by neb_theory.numcores)
+#
+# Total cores used = neb.cores × neb_theory.numcores (when runmode=parallel)
+# ================================================================================
 neb:
   images: 8                     # Number of images between reactant and product
   maxiter: 200                  # Maximum iterations for NEB optimization
@@ -163,10 +168,28 @@ neb:
   CI: true                      # Climbing Image NEB (true/false)
                                 # true: Highest image climbs to TS
                                 # false: Standard NEB without climbing
+  use_ts_guess: true            # Whether to use TS guess file for NEB initialization
+                                # true: Insert TS guess into NEB path for better convergence
+                                #   - Requires inputs.ts_guess to be provided
+                                # false: Standard NEB without TS guess
+                                #   - Only reactant and product are used
   runmode: "serial"             # "serial" or "parallel"
-                                # serial: Process images one by one
+                                # serial: Process images one by one (recommended, simpler)
+                                #   - neb.cores must be 1
+                                #   - Only neb_theory.numcores is used
                                 # parallel: Process images simultaneously
-  cores: 1                      # Number of cores (only used if runmode=parallel)
+                                #   - neb.cores > 1 to enable image parallelization
+                                #   - Total cores = neb.cores × neb_theory.numcores
+  cores: 1                      # Number of cores for NEB image parallelization
+                                # ONLY used when runmode=parallel
+                                # When runmode=serial, this MUST be 1
+                                # When runmode=parallel, should match number of images
+                                #
+                                # Example with runmode=parallel and 8 images:
+                                #   neb.cores: 8, neb_theory.numcores: 4
+                                #   → 8 images processed in parallel
+                                #   → Each image uses 4 cores for theory calculation
+                                #   → Total: 8 × 4 = 32 cores needed
 
 # ================================================================================
 # Optimization Settings
