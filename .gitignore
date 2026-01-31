@@ -6,8 +6,10 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Test directories (optional - uncomment if you don't want to commit test runs)
+# Test directories
 ash_xtb_smoketest_runs/
+ash_dpa_smoketest_runs/
+ash_smoketest_runs/
 orca_test/
 .claude/
 .ipynb_checkpoints/
@@ -20,11 +22,25 @@ molecular_matchers/**/.ipynb_checkpoints/
 *.swp
 *~
 
-# Output files (keep examples but ignore others)
-# *.pkl
-# *.json
+# Model files (too large - use mlps/.gitkeep to keep directory)
+mlps/*.model
+mlps/*.pt
+mlps/*.ckpt
 
-# Claude Code
+# Notes and docs (optional)
 ASH_XTB_WORKFLOW_NOTES.md
 CHANGELOG.md
 CONFIG_README.md
+
+# Old files (replaced by config.yaml and ash_workflow.py)
+ash_xtb_explicit_workflow_smoketest.py
+ash_xtb_workflow_config.yaml
+ash_dpa_workflow_config.yaml
+test_dpa.py
+interface_DPA3.py
+
+# Old XYZ files (only keeping R.xyz, P.xyz, TS_guess.xyz)
+xyz/reactant.xyz
+xyz/product.xyz
+xyz/ts_ini.xyz
+

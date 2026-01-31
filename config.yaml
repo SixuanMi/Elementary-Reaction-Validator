@@ -1,0 +1,285 @@
+# ================================================================================
+# ASH Workflow Configuration
+# ================================================================================
+# Usage: python ash_xtb_explicit_workflow_smoketest.py --config config.yaml
+#
+# All parameters must be specified in this config file.
+# Command-line parameter override is not supported.
+#
+# Available theory types:
+#   - xtb: Semi-empirical tight-binding (GFN1/GFN2)
+#   - orca: DFT with various functionals
+#   - mace: Machine learning potential for molecules
+#   - fairchem: Universal ML potential for catalysis
+#   - dpa: Deep Potential Approximation with multitask support
+#
+# Environment requirements:
+#   - xtb/orca: ash-py310 (or any with ASH installed)
+#   - mace/fairchem: mace environment
+#   - dpa: dpa3 environment
+# ================================================================================
+
+# ================================================================================
+# Input files
+# ================================================================================
+inputs:
+  reactant: "xyz/R.xyz"
+  product: "xyz/P.xyz"
+  ts_guess: "xyz/TS_guess.xyz"
+
+# ================================================================================
+# System properties
+# ================================================================================
+system:
+  charge: 0                    # Total charge of the system
+  mult: 1                      # Multiplicity (1=singlet, 2=doublet, etc.)
+  temperature: 298.15          # Temperature in Kelvin for thermochemistry
+  pressure: 1.0                # Pressure in atm for thermochemistry
+
+# ================================================================================
+# Theory Settings - Two independent theory levels
+# ================================================================================
+#
+# Main theory: Used for opt_reactant, opt_product, tsopt, numfreq, irc,
+#              opt_irc_forward, opt_irc_backward, freq_irc_forward, freq_irc_backward
+# IMPORTANT: All these stages MUST use the same theory level for consistency
+#
+# NEB theory: Used for NEB/CI-NEB path search
+#             Can use a faster/cheaper method than main_theory
+#
+# ================================================================================
+
+# -------------------------------------------------------------------------------
+# Main Theory Configuration
+# -------------------------------------------------------------------------------
+main_theory:
+  # Choose theory type: xtb, orca, mace, fairchem, or dpa
+  type: "xtb"
+
+  numcores: 8                  # Number of cores for parallelization
+  printlevel: 1                # ASH print level (0=minimal, 1=normal, 2=verbose)
+
+  # ---------------------------------------------------------------------------
+  # xTB settings (only used when type=xtb)
+  # ---------------------------------------------------------------------------
+  xtb:
+    method: "GFN2"             # GFN1 or GFN2-xTB (GFN2 recommended)
+    runmode: "inputfile"       # "inputfile" (disk I/O) or "library" (in-memory)
+
+  # ---------------------------------------------------------------------------
+  # ORCA settings (only used when type=orca)
+  # ---------------------------------------------------------------------------
+  orca:
+    orcasimpleinput: "! B97-3c"         # Method and basis set
+    orcablocks: |
+      %scf
+        maxiter 200
+      end
+    moreadfile: null                    # Optional: path to .gbw file for orbital guess
+
+  # ---------------------------------------------------------------------------
+  # MACE settings (only used when type=mace)
+  # ---------------------------------------------------------------------------
+  mace:
+    model_file: "/inspire/qb-ilm/project/chemicalreaction/misixuan-CZXS24220243/ash-pipeline/mlps/mace-mh-1.model"
+    device: "cpu"                        # cpu, cuda, opencl, mps
+
+  # ---------------------------------------------------------------------------
+  # FairChem settings (only used when type=fairchem)
+  # ---------------------------------------------------------------------------
+  fairchem:
+    model_file: "/inspire/qb-ilm/project/chemicalreaction/misixuan-CZXS24220243/ash-pipeline/mlps/uma-s-1p1.pt"
+    task_name: "omol"                    # Task name for multitask model
+                                      # Options: oc20, omol, omat, odac, omc
+                                      #   oc20: OC20 catalysis
+                                      #   omol: OC22 molecular chemistry (recommended)
+                                      #   omat: OC22 materials
+                                      #   odac: DAC catalysis
+                                      #   omc: MC materials
+    device: "cpu"                        # cpu, cuda, opencl, mps
+
+  # ---------------------------------------------------------------------------
+  # DPA3 settings (only used when type=dpa)
+  # ---------------------------------------------------------------------------
+  dpa:
+    model_file: "/inspire/qb-ilm/project/chemicalreaction/misixuan-CZXS24220243/ash-pipeline/mlps/DPA-3.1-3M.pt"
+    head: "Organic_Reactions"            # Model head for multitask model
+                                      # Common options:
+                                      #   Organic_Reactions: Organic molecular reactions (recommended)
+                                      #   OC20M: OC20 catalysis
+                                      #   OC22: OC22 molecular and materials
+                                      #   Omat24: Materials
+                                      #   SPICE2: Molecular datasets
+                                      #   And many more - use `dp --pt show model.pt model-branch` to list
+    device: "cpu"                        # cpu, cuda, opencl, mps
+
+# -------------------------------------------------------------------------------
+# NEB Theory Configuration
+# -------------------------------------------------------------------------------
+# Can use a faster/cheaper method than main_theory for path searching
+neb_theory:
+  # Choose theory type: xtb, orca, mace, fairchem, or dpa
+  type: "xtb"
+
+  numcores: 8
+  printlevel: 1
+
+  # xTB settings (only used when type=xtb)
+  xtb:
+    method: "GFN2"
+    runmode: "inputfile"
+
+  # ORCA settings (only used when type=orca)
+  orca:
+    orcasimpleinput: "! B97-3c"
+    orcablocks: ""
+    moreadfile: null
+
+  # MACE settings (only used when type=mace)
+  mace:
+    model_file: "/inspire/qb-ilm/project/chemicalreaction/misixuan-CZXS24220243/ash-pipeline/mlps/mace-mh-1.model"
+    device: "cpu"
+
+  # FairChem settings (only used when type=fairchem)
+  fairchem:
+    model_file: "/inspire/qb-ilm/project/chemicalreaction/misixuan-CZXS24220243/ash-pipeline/mlps/uma-s-1p1.pt"
+    task_name: "omol"
+    device: "cpu"
+
+  # DPA3 settings (only used when type=dpa)
+  dpa:
+    model_file: "/inspire/qb-ilm/project/chemicalreaction/misixuan-CZXS24220243/ash-pipeline/mlps/DPA-3.1-3M.pt"
+    head: "Organic_Reactions"
+    device: "cpu"
+
+# ================================================================================
+# NEB (CI-NEB/CINEB) Settings
+# ================================================================================
+neb:
+  images: 8                     # Number of images between reactant and product
+  maxiter: 200                  # Maximum iterations for NEB optimization
+  interpolation: "IDPP"         # Initial path interpolation method
+                                # Options: "linear" (straight line), "IDPP" (image-dependent pair potential)
+  CI: true                      # Climbing Image NEB (true/false)
+                                # true: Highest image climbs to TS
+                                # false: Standard NEB without climbing
+  runmode: "serial"             # "serial" or "parallel"
+                                # serial: Process images one by one
+                                # parallel: Process images simultaneously
+  cores: 1                      # Number of cores (only used if runmode=parallel)
+
+# ================================================================================
+# Optimization Settings
+# ================================================================================
+optimization:
+  maxiter: 200                  # Maximum optimization iterations
+  convergence_setting: "ORCA"   # Convergence criteria
+                                # Options:
+                                #   "ORCA": ORCA default (recommended)
+                                #   "GAU": Gaussian default
+                                #   "GAU_TIGHT": Gaussian tight
+                                #   "GAU_LOOSE": Gaussian loose
+                                #   "GAU_VERYTIGHT": Gaussian very tight
+
+# ================================================================================
+# TS Optimization Settings
+# ================================================================================
+tsopt:
+  maxiter: 200                  # Maximum TS optimization iterations
+  convergence_setting: "ORCA"   # Convergence criteria (same options as above)
+  hessian: null                 # Hessian calculation option
+                                # For xtb: "xtb" (use xTB Hessian)
+                                # For ORCA: "numerical" or null (analytical)
+                                # For MACE/FairChem/DPA: null (not supported)
+
+# ================================================================================
+# Frequency Calculation Settings
+# ================================================================================
+frequency:
+  method: "auto"                # Frequency calculation method
+                                # Options:
+                                #   "auto": Automatically select based on theory
+                                #           - ORCA: AnFreq (analytical, faster)
+                                #           - xTB/MACE/FairChem/DPA: NumFreq (numerical)
+                                #   "numerical": Force NumFreq (numerical differentiation)
+                                #   "analytical": Force AnFreq (analytical, ORCA only)
+  npoint: 2                     # Number of points for numerical differentiation
+                                # 1: Faster (forward difference)
+                                # 2: More accurate (central difference, recommended)
+                                # Only used when method="numerical" or for ML theories
+  runmode: "serial"             # "serial" or "parallel" (for numerical frequencies)
+  cores: 1                      # Number of cores (only used if runmode="parallel")
+  imag_threshold: 20.0          # Imaginary frequency threshold in cm^-1
+                                # Frequencies < -imag_threshold are considered significant
+
+# ================================================================================
+# IRC Settings
+# ================================================================================
+irc:
+  maxiter: 200                  # Maximum IRC iterations per direction
+
+# ================================================================================
+# Endpoint Match (Stage 9) Settings
+# ================================================================================
+# Molecular matching method for cross-isomorphism validation
+#
+# Available methods:
+#   - smiles_openbabel: OpenBabel SMILES comparison (fast, reliable)
+#   - smiles_rdkit: RDKit SMILES with multiple bond strategies (complex molecules)
+#   - graph_isomorphism: Pymatgen + NetworkX graph topology matching
+#   - rmsd: 3D RMSD structural comparison after Kabsch alignment (very strict)
+#   - soap: SOAP descriptor similarity for conformations
+# ================================================================================
+endpoint_match:
+  method: "smiles_openbabel"    # Choose matching method
+
+  # ---------------------------------------------------------------------------
+  # SMILES (OpenBabel) - No parameters needed
+  # ---------------------------------------------------------------------------
+  # Always includes stereochemistry, fast and reliable
+  smiles_openbabel:
+
+  # ---------------------------------------------------------------------------
+  # SMILES (RDKit) - For complex molecules and atom mapping
+  # ---------------------------------------------------------------------------
+  smiles_rdkit:
+    atom_map: false              # Include atom map numbers (AAM) for tracking atoms
+    all_hs_explicit: true        # true=explicit hydrogens, false=implicit hydrogens
+
+  # ---------------------------------------------------------------------------
+  # Graph Isomorphism - For topology change detection
+  # ---------------------------------------------------------------------------
+  graph_isomorphism:
+    local_env: "OpenBabelNN"     # Local environment strategy
+                                # Options: OpenBabelNN, CovalentBondNN, MinimumDistanceNN
+
+  # ---------------------------------------------------------------------------
+  # RMSD - For geometric comparison
+  # ---------------------------------------------------------------------------
+  rmsd:
+    threshold: 0.5               # RMSD threshold in Angstrom
+                                # Lower = stricter matching
+    allow_reorder: false         # Allow atom reordering using Hungarian algorithm
+                                # true: Try all atom permutations
+                                # false: Assume atoms are already ordered
+    heavy_only: false            # Compare only heavy atoms (ignore hydrogen)
+                                # true: Skip hydrogen atoms in comparison
+
+  # ---------------------------------------------------------------------------
+  # SOAP - For conformational comparison
+  # ---------------------------------------------------------------------------
+  soap:
+    r_cut: 6.0                   # Cutoff radius in Angstrom
+    n_max: 8                     # Number of radial basis functions
+    l_max: 6                     # Maximum angular momentum
+    sigma: 1.0                   # Gaussian width (higher = smoother, less sensitive)
+    kernel_metric: "linear"      # "linear" or "rbf" for AverageKernel
+    kernel_gamma: null           # RBF kernel gamma (null=auto, only for rbf metric)
+    threshold_similarity: 0.995  # Similarity threshold for match (0-1)
+
+# ================================================================================
+# Output Settings
+# ================================================================================
+output:
+  base_dir: "ash_smoketest_runs"  # Base directory for run outputs
+  printlevel: 1                   # ASH print level for stages where supported

@@ -19,6 +19,14 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import yaml
 
+# Suppress matplotlib fontManager warning that can interfere with geometric log parsing
+# This warning appears as "generated new fontManager" in logs and can break step parsing
+import warnings
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+import matplotlib.font_manager
+warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
+
 
 def _add_local_ash_to_syspath() -> Tuple[Path, Path]:
     repo_root = Path(__file__).resolve().parent
@@ -282,69 +290,98 @@ def _write_workflow_summary(run_dir: Path, summary: Dict[str, Any], stages: List
     return out_path
 
 
+# ============================================================================
+# Molecular Matcher Module (cross-isomorphism with multiple methods)
+# ============================================================================
+
+# Import the modular molecular matchers
+# This provides pluggable endpoint matching strategies:
+# - smiles_openbabel: OpenBabel SMILES comparison
+# - smiles_rdkit: RDKit SMILES comparison with multiple bond strategies
+# - graph_isomorphism: Pymatgen + NetworkX graph isomorphism
+# - rmsd: 3D RMSD structural comparison
+# - soap: SOAP descriptor similarity
+def _get_endpoint_matcher(endpoint_match_config: Dict[str, Any]):
+    """
+    Create a molecular matcher instance from config.
+
+    Args:
+        endpoint_match_config: Config dict with 'method' and method-specific settings
+
+    Returns:
+        MoleculeMatcher instance or None if method not found
+    """
+    from molecular_matchers import create_matcher_from_config
+
+    return create_matcher_from_config(endpoint_match_config)
+
+
+def _cross_isomorphism(
+    true_r: Path,
+    true_p: Path,
+    irc_r: Path,
+    irc_p: Path,
+    matcher=None,
+) -> Dict[str, Any]:
+    """
+    Cross-compare endpoints using the configured molecular matcher.
+
+    This is a backward-compatible wrapper that uses the new modular matcher system.
+    If no matcher is provided, falls back to the default OpenBabel SMILES method.
+
+    Args:
+        true_r: Original reactant XYZ file
+        true_p: Original product XYZ file
+        irc_r: IRC backward endpoint XYZ file
+        irc_p: IRC forward endpoint XYZ file
+        matcher: Optional MoleculeMatcher instance (if None, uses OpenBabel default)
+
+    Returns:
+        Dict with match results
+    """
+    # Use default OpenBabel matcher if none provided
+    if matcher is None:
+        from molecular_matchers import OpenBabelSmilesMatcher
+        matcher = OpenBabelSmilesMatcher()
+
+    # Run cross-isomorphism check
+    result = matcher.cross_isomorphism(true_r, true_p, irc_r, irc_p)
+    result_dict = result.to_dict()
+
+    # Flatten metadata for backward compatibility (only for SMILES methods)
+    # For other methods, keep metadata structured to avoid duplication
+    metadata = result_dict.get("metadata", {})
+
+    if "smiles_openbabel" in result.method or "smiles_rdkit" in result.method:
+        # For SMILES, flatten smi_* fields to top level for convenience
+        result_dict["smi_true_r"] = metadata.get("sig_true_r", "")
+        result_dict["smi_true_p"] = metadata.get("sig_true_p", "")
+        result_dict["smi_irc_r"] = metadata.get("sig_irc_r", "")
+        result_dict["smi_irc_p"] = metadata.get("sig_irc_p", "")
+        # Remove from metadata to avoid duplication
+        for key in ["sig_true_r", "sig_true_p", "sig_irc_r", "sig_irc_p"]:
+            metadata.pop(key, None)
+
+    # For other methods, keep metadata structured (no flattening)
+    # This keeps the JSON clean and avoids duplication
+
+    return result_dict
+
+
+# Legacy function kept for backward compatibility
 def _canonical_smiles_from_xyz(xyz_file: Path) -> str:
     """
-    Best-effort XYZ -> canonical SMILES (incl. stereo) using OpenBabel/pybel.
-    Returns "" on failure (missing deps or conversion error).
+    Legacy function: Best-effort XYZ -> canonical SMILES using OpenBabel/pybel.
+    Returns "" on failure.
+
+    Note: This is kept for backward compatibility.
+    New code should use the molecular_matchers module directly.
     """
-    try:
-        from openbabel import pybel  # type: ignore
-    except Exception:
-        return ""
+    from molecular_matchers import OpenBabelSmilesMatcher
 
-    try:
-        mol = next(pybel.readfile("xyz", str(xyz_file)))
-        return mol.write("can").strip().split()[0]
-    except Exception:
-        return ""
-
-
-def _cross_isomorphism(true_r: Path, true_p: Path, irc_r: Path, irc_p: Path) -> Dict[str, Any]:
-    """
-    Cross-compare endpoints via canonical SMILES (incl. stereo), mirroring do_orca_validation.py logic.
-    """
-    smi_true_r = _canonical_smiles_from_xyz(true_r)
-    smi_true_p = _canonical_smiles_from_xyz(true_p)
-    smi_irc_r = _canonical_smiles_from_xyz(irc_r)
-    smi_irc_p = _canonical_smiles_from_xyz(irc_p)
-
-    if not all([smi_true_r, smi_true_p, smi_irc_r, smi_irc_p]):
-        return {
-            "performed": True,
-            "success": False,
-            "endpoint_match": "Error",
-            "smi_true_r": smi_true_r,
-            "smi_true_p": smi_true_p,
-            "smi_irc_r": smi_irc_r,
-            "smi_irc_p": smi_irc_p,
-        }
-
-    matches = (
-        smi_true_r == smi_irc_r,
-        smi_true_p == smi_irc_p,
-        smi_true_r == smi_irc_p,
-        smi_true_p == smi_irc_r,
-    )
-    rxn_status = "Conformational change" if smi_irc_r == smi_irc_p else "Chemical reaction"
-
-    if matches in [(True, True, False, False), (False, False, True, True)]:
-        endpoint_match = "2-end match"
-    elif any(matches):
-        endpoint_match = "1-end match"
-    else:
-        endpoint_match = "No match"
-
-    return {
-        "performed": True,
-        "success": True,
-        "endpoint_match": endpoint_match,
-        "matches": matches,
-        "rxn_status": rxn_status,
-        "smi_true_r": smi_true_r,
-        "smi_true_p": smi_true_p,
-        "smi_irc_r": smi_irc_r,
-        "smi_irc_p": smi_irc_p,
-    }
+    matcher = OpenBabelSmilesMatcher()
+    result = matcher.compute_signature(xyz_file)
+    return result if result else ""
 
 
 def _read_xyz_elements_coords(xyz_path: Path) -> Tuple[List[str], np.ndarray]:
@@ -437,18 +474,33 @@ def _read_irc_trajectory(irc_traj_xyz: Path) -> Tuple[np.ndarray, np.ndarray]:
 
 
 def _read_numfreq_result(numfreq_dir: Path) -> Dict[str, Any]:
-    """Read NumFreq result, extract coords, energy, gradient, hessian, frequencies, thermochemistry
+    """Read NumFreq or AnFreq result, extract coords, energy, hessian, frequencies, thermochemistry
 
-    All data comes from the same geometry (the one used for frequency calculation).
+    Strategy:
+    - Coords & Energy: Read from the OPTIMIZATION output (not from frequency calculation)
+    - Hessian & Frequencies & Thermochemistry: Read from frequency calculation (NumFreq or AnFreq)
+    - Gradient: Removed (not needed, optimization converged so gradient ≈ 0)
+
+    Directory mapping:
+    - 05_tsfreq (TS freq) → optimization in 04_tsopt → TS_opt.xyz
+    - 07a_freq_irc_forward → optimization in 07_opt_irc_forward → IRC_forward_opt.xyz
+    - 08a_freq_irc_backward → optimization in 08_opt_irc_backward → IRC_backward_opt.xyz
     """
-    result_file = numfreq_dir / "ASH_NumFreq.result"
-    if not result_file.exists():
+    # Try NumFreq first, then AnFreq
+    numfreq_result_file = numfreq_dir / "ASH_NumFreq.result"
+    anfreq_result_file = numfreq_dir / "ASH_AnFreq.result"
+
+    is_anfreq = False
+    if numfreq_result_file.exists():
+        result_file = numfreq_result_file
+    elif anfreq_result_file.exists():
+        result_file = anfreq_result_file
+        is_anfreq = True
+    else:
         return {}
 
     with open(result_file) as f:
         data = json.load(f)
-
-    numfreq_dir_inner = numfreq_dir / "Numfreq_dir"
 
     result = {
         "frequencies_cm-1": np.array(data.get("frequencies", [])),
@@ -459,28 +511,71 @@ def _read_numfreq_result(numfreq_dir: Path) -> Dict[str, Any]:
         },
     }
 
-    # Read geometry (coords), energy, gradient, hessian from Numfreq_dir
-    xyz_file = numfreq_dir_inner / "xtb_.xyz"
-    if xyz_file.exists():
-        _, coords = _read_xyz_elements_coords(xyz_file)
+    # Determine which optimization directory to read coords/energy from
+    parent_dir = numfreq_dir.parent
+    freq_dirname = numfreq_dir.name
+
+    if freq_dirname == "05_tsfreq":
+        opt_dir = parent_dir / "04_tsopt"
+        opt_xyz = parent_dir / "TS_opt.xyz"
+    elif freq_dirname == "07a_freq_irc_forward":
+        opt_dir = parent_dir / "07_opt_irc_forward"
+        opt_xyz = parent_dir / "IRC_forward_opt.xyz"
+    elif freq_dirname == "08a_freq_irc_backward":
+        opt_dir = parent_dir / "08_opt_irc_backward"
+        opt_xyz = parent_dir / "IRC_backward_opt.xyz"
+    else:
+        # Fallback: try to infer from available files
+        opt_dir = None
+        opt_xyz = parent_dir / "TS_opt.xyz"
+        if not opt_xyz.exists():
+            opt_xyz = parent_dir / "IRC_forward_opt.xyz"
+        if not opt_xyz.exists():
+            opt_xyz = parent_dir / "IRC_backward_opt.xyz"
+
+    # Read coordinates from optimized structure
+    if opt_xyz.exists():
+        _, coords = _read_xyz_elements_coords(opt_xyz)
         result["coords_A"] = coords
 
-    energy_file = numfreq_dir_inner / "energy"
-    if energy_file.exists():
-        result["energy_Eh"] = _read_energy_file(energy_file)
+    # Read energy from optimization output
+    if opt_dir and opt_dir.exists():
+        # Try xTB output first
+        xtb_out = opt_dir / "xtb_.out"
+        if xtb_out.exists():
+            with open(xtb_out) as f:
+                for line in f:
+                    if "TOTAL ENERGY" in line:
+                        parts = line.split()
+                        result["energy_Eh"] = float(parts[3])
 
-    gradient_file = numfreq_dir_inner / "gradient"
-    if gradient_file.exists():
-        result["gradient_Eh_per_A"] = _read_gradient_file(gradient_file)
+        # Try ORCA output
+        orca_out = opt_dir / "orca_.out"
+        if orca_out.exists():
+            with open(orca_out) as f:
+                for line in f:
+                    if "FINAL SINGLE POINT ENERGY" in line:
+                        result["energy_Eh"] = float(line.split()[-1])
 
-    hess_file = numfreq_dir_inner / "Hessian"
-    if hess_file.exists():
-        result["hessian_Eh_per_A2"] = np.loadtxt(hess_file)
+    # Read Hessian from frequency calculation
+    if is_anfreq:
+        # AnFreq: Hessian is directly in numfreq_dir
+        hess_file = numfreq_dir / "Hessian"
+        if hess_file.exists():
+            result["hessian_Eh_per_A2"] = np.loadtxt(hess_file)
+    else:
+        # NumFreq: Hessian is in Numfreq_dir subdirectory
+        hess_file = numfreq_dir / "Numfreq_dir" / "Hessian"
+        if not hess_file.exists():
+            # Fallback: check directly in numfreq_dir
+            hess_file = numfreq_dir / "Hessian"
+        if hess_file.exists():
+            result["hessian_Eh_per_A2"] = np.loadtxt(hess_file)
 
     return result
 
 
-def _save_workflow_result_pkl(run_dir: Path, charge: int, mult: int, elements: List[str]) -> Optional[Path]:
+def _save_workflow_result_pkl(run_dir: Path, charge: int, mult: int, elements: List[str], temperature: float = 298.15, pressure: float = 1.0) -> Optional[Path]:
     """Collect all workflow results and save as pickle file.
 
     Returns None if any required data is missing.
@@ -494,12 +589,12 @@ def _save_workflow_result_pkl(run_dir: Path, charge: int, mult: int, elements: L
         irc_traj, irc_energies = _read_irc_trajectory(run_dir / "06_irc/geometric_OPTtraj_irc.xyz")
 
         # Read NumFreq results (all data from the same frequency calculation)
-        ts_numfreq = _read_numfreq_result(run_dir / "05_numfreq")
+        ts_numfreq = _read_numfreq_result(run_dir / "05_tsfreq")
         irc_f_numfreq = _read_numfreq_result(run_dir / "07a_freq_irc_forward")
         irc_b_numfreq = _read_numfreq_result(run_dir / "08a_freq_irc_backward")
 
-        # Check for missing data
-        required_keys = ["coords_A", "energy_Eh", "gradient_Eh_per_A", "hessian_Eh_per_A2",
+        # Check for missing data (removed gradient_Eh_per_A from required keys)
+        required_keys = ["coords_A", "energy_Eh", "hessian_Eh_per_A2",
                          "frequencies_cm-1", "thermochemistry"]
         for name, data in [("ts", ts_numfreq), ("irc_forward", irc_f_numfreq), ("irc_backward", irc_b_numfreq)]:
             if not data or any(k not in data for k in required_keys):
@@ -514,23 +609,25 @@ def _save_workflow_result_pkl(run_dir: Path, charge: int, mult: int, elements: L
             "units": {
                 "coords": "Å",
                 "energy": "Eh",
-                "gradient": "Eh/Å",
                 "hessian": "Eh/Å²",
                 "frequencies": "cm⁻¹",
                 "thermo": "Eh",
-                "temperature": "298.15 K",
+                "temperature": "K",
+                "pressure": "atm",
             },
             "system": {
                 "elements": elements_r,
                 "charge": charge,
                 "mult": mult,
                 "natoms": len(elements_r),
+                "temperature": temperature,
+                "pressure": pressure,
             },
             # reactant = IRC backward endpoint (all from NumFreq)
             "reactant": {
                 "coords_A": irc_b_numfreq["coords_A"],
                 "energy_Eh": irc_b_numfreq["energy_Eh"],
-                "gradient_Eh_per_A": irc_b_numfreq["gradient_Eh_per_A"],
+                
                 "hessian_Eh_per_A2": irc_b_numfreq["hessian_Eh_per_A2"],
                 "frequencies_cm-1": irc_b_numfreq["frequencies_cm-1"],
                 "thermochemistry": irc_b_numfreq["thermochemistry"],
@@ -539,7 +636,7 @@ def _save_workflow_result_pkl(run_dir: Path, charge: int, mult: int, elements: L
             "product": {
                 "coords_A": irc_f_numfreq["coords_A"],
                 "energy_Eh": irc_f_numfreq["energy_Eh"],
-                "gradient_Eh_per_A": irc_f_numfreq["gradient_Eh_per_A"],
+                
                 "hessian_Eh_per_A2": irc_f_numfreq["hessian_Eh_per_A2"],
                 "frequencies_cm-1": irc_f_numfreq["frequencies_cm-1"],
                 "thermochemistry": irc_f_numfreq["thermochemistry"],
@@ -548,7 +645,7 @@ def _save_workflow_result_pkl(run_dir: Path, charge: int, mult: int, elements: L
             "ts": {
                 "coords_A": ts_numfreq["coords_A"],
                 "energy_Eh": ts_numfreq["energy_Eh"],
-                "gradient_Eh_per_A": ts_numfreq["gradient_Eh_per_A"],
+                
                 "hessian_Eh_per_A2": ts_numfreq["hessian_Eh_per_A2"],
                 "frequencies_cm-1": ts_numfreq["frequencies_cm-1"],
                 "thermochemistry": ts_numfreq["thermochemistry"],
@@ -561,7 +658,7 @@ def _save_workflow_result_pkl(run_dir: Path, charge: int, mult: int, elements: L
             "irc_forward": {
                 "coords_A": irc_f_numfreq["coords_A"],
                 "energy_Eh": irc_f_numfreq["energy_Eh"],
-                "gradient_Eh_per_A": irc_f_numfreq["gradient_Eh_per_A"],
+                
                 "hessian_Eh_per_A2": irc_f_numfreq["hessian_Eh_per_A2"],
                 "frequencies_cm-1": irc_f_numfreq["frequencies_cm-1"],
                 "thermochemistry": irc_f_numfreq["thermochemistry"],
@@ -570,7 +667,7 @@ def _save_workflow_result_pkl(run_dir: Path, charge: int, mult: int, elements: L
             "irc_backward": {
                 "coords_A": irc_b_numfreq["coords_A"],
                 "energy_Eh": irc_b_numfreq["energy_Eh"],
-                "gradient_Eh_per_A": irc_b_numfreq["gradient_Eh_per_A"],
+                
                 "hessian_Eh_per_A2": irc_b_numfreq["hessian_Eh_per_A2"],
                 "frequencies_cm-1": irc_b_numfreq["frequencies_cm-1"],
                 "thermochemistry": irc_b_numfreq["thermochemistry"],
@@ -599,53 +696,34 @@ def _create_theory_from_config(theory_config: Dict[str, Any], theory_name: str =
     """
     Factory function to create theory object based on config.
 
+    Uses the modular theory_factories module for pluggable theory creation.
+
     Args:
         theory_config: Theory configuration dictionary
         theory_name: Name for logging (e.g., "main_theory", "neb_theory")
 
     Returns:
-        Theory object (xTBTheory or ORCATheory)
+        Theory object (xTBTheory, ORCATheory, MACETheory, etc.)
     """
-    theory_type = theory_config["type"].lower()
-    numcores = theory_config.get("numcores", 1)
-    printlevel = theory_config.get("printlevel", 1)
+    from theory_factories import create_theory_from_config, list_theories
 
-    if theory_type == "xtb":
-        from ash import xTBTheory
-        xtb_config = theory_config["xtb"]
-
-        print(f"[INFO] Creating {theory_name} with xTB:")
-        print(f"       method={xtb_config['method']}, runmode={xtb_config['runmode']}, numcores={numcores}")
-
-        return xTBTheory(
-            xtbmethod=xtb_config["method"],
-            runmode=xtb_config["runmode"],
-            numcores=numcores,
-            printlevel=printlevel,
-            filename=xtb_config.get("filename", "xtb_"),
+    theory = create_theory_from_config(theory_config)
+    if theory is None:
+        available = ", ".join(list_theories())
+        raise ValueError(
+            f"Failed to create theory with type '{theory_config.get('type')}'. "
+            f"Available theories: {available}"
         )
 
-    elif theory_type == "orca":
-        from ash import ORCATheory
-        orca_config = theory_config["orca"]
+    # Print info for backward compatibility
+    theory_type = theory_config["type"]
+    print(f"[INFO] Created {theory_name} with {theory_type}")
+    print(f"       theorynamelabel: {theory.theorynamelabel}")
 
-        print(f"[INFO] Creating {theory_name} with ORCA:")
-        print(f"       input={orca_config['orcasimpleinput']}, numcores={numcores}")
-
-        return ORCATheory(
-            orcasimpleinput=orca_config["orcasimpleinput"],
-            orcablocks=orca_config.get("orcablocks", ""),
-            numcores=numcores,
-            printlevel=printlevel,
-            filename=orca_config.get("filename", "orca_"),
-            moreadfile=orca_config.get("moreadfile"),
-        )
-
-    else:
-        raise ValueError(f"Unsupported theory type: {theory_type}. Supported: xtb, orca")
+    return theory
 
 
-def _get_freq_function_and_params(theory_type: str, freq_method: str, freq_npoint: int, freq_runmode: str, freq_cores: int):
+def _get_freq_function_and_params(theory_type: str, freq_method: str, freq_npoint: int, freq_runmode: str, freq_cores: int, temperature: float, pressure: float):
     """
     Get appropriate frequency function and parameters based on theory type and freq_method.
 
@@ -655,6 +733,8 @@ def _get_freq_function_and_params(theory_type: str, freq_method: str, freq_npoin
         freq_npoint: npoint for numerical frequencies
         freq_runmode: runmode for numerical frequencies
         freq_cores: cores for numerical frequencies
+        temperature: Temperature in K for thermochemistry
+        pressure: Pressure in atm for thermochemistry
 
     Returns:
         Tuple of (freq_function, freq_kwargs)
@@ -674,15 +754,19 @@ def _get_freq_function_and_params(theory_type: str, freq_method: str, freq_npoin
     if use_analytical:
         from ash import AnFreq
         print(f"[INFO] Using AnFreq (analytical frequencies) for {theory_type}")
-        # AnFreq doesn't use npoint, runmode, numcores parameters
-        return AnFreq, {}
+        print(f"       temp={temperature}K, pressure={pressure}atm")
+        # AnFreq does NOT have numcores parameter - parallelization is handled by the theory object
+        return AnFreq, {"temp": temperature, "pressure": pressure}
     else:
         from ash import NumFreq
         print(f"[INFO] Using NumFreq (numerical frequencies) for {theory_type}")
+        print(f"       temp={temperature}K, pressure={pressure}atm")
         return NumFreq, {
             "npoint": freq_npoint,
             "runmode": freq_runmode,
             "numcores": freq_cores,
+            "temp": temperature,
+            "pressure": pressure,
         }
 
 
@@ -697,6 +781,8 @@ def _load_config_to_namespace(config: Dict[str, Any]) -> argparse.Namespace:
 
     args.charge = config["system"]["charge"]
     args.mult = config["system"]["mult"]
+    args.temperature = config["system"].get("temperature", 298.15)  # Default 298.15 K
+    args.pressure = config["system"].get("pressure", 1.0)  # Default 1.0 atm
 
     # Theory configurations (store as dict for factory function)
     args.main_theory_config = config["main_theory"]
@@ -723,6 +809,9 @@ def _load_config_to_namespace(config: Dict[str, Any]) -> argparse.Namespace:
     args.imag_threshold = config["frequency"]["imag_threshold"]
 
     args.irc_maxiter = config["irc"]["maxiter"]
+
+    # Endpoint match configuration
+    args.endpoint_match_config = config.get("endpoint_match", {"method": "smiles_openbabel"})
 
     args.outdir = config["output"]["base_dir"]
     args.printlevel = config["output"]["printlevel"]
@@ -1043,7 +1132,7 @@ def main() -> int:
     # --- Stage 5: NumFreq on TS ---
     freq_result = None
     try:
-        stage_dir = run_dir / "05_numfreq"
+        stage_dir = run_dir / "05_tsfreq"
         with _pushd(stage_dir):
             ts_opt = run_dir / "TS_opt.xyz"
             if not ts_opt.exists():
@@ -1056,14 +1145,14 @@ def main() -> int:
                 args.freq_method,
                 args.freq_npoint,
                 args.freq_runmode,
-                args.freq_cores
+                args.freq_cores,
+                args.temperature,
+                args.pressure
             )
 
             freq_result = FreqFunc(
                 fragment=frag_ts,
                 theory=main_theory,
-                charge=args.charge,
-                mult=args.mult,
                 printlevel=args.printlevel,
                 **freq_kwargs
             )
@@ -1071,7 +1160,15 @@ def main() -> int:
             freqs = [float(f) for f in freqs_obj] if freqs_obj is not None else []
             imag_count, imag_freqs = _count_significant_imaginary(freqs, args.imag_threshold)
 
-            _copy_if_exists(stage_dir / "Numfreq_dir" / "Hessian", run_dir / "Hessian_NumFreq")
+            # Copy Hessian file (handle both NumFreq and AnFreq directory structures)
+            # NumFreq: stage_dir/Numfreq_dir/Hessian
+            # AnFreq: stage_dir/Hessian (directly in stage_dir)
+            hess_src = stage_dir / "Numfreq_dir" / "Hessian"
+            if not hess_src.exists():
+                hess_src = stage_dir / "Anfreq_dir" / "Hessian"
+            if not hess_src.exists():
+                hess_src = stage_dir / "Hessian"
+            _copy_if_exists(hess_src, run_dir / "Hessian_NumFreq")
             wrote_hessian = (run_dir / "Hessian_NumFreq").exists()
             stage_ok = imag_count == 1 and wrote_hessian
             if not stage_ok:
@@ -1103,7 +1200,7 @@ def main() -> int:
                 )
             )
             if not stage_ok:
-                return _finalize(exit_code=2, stop_stage="05_numfreq", stop_reason=stages[-1].error)
+                return _finalize(exit_code=2, stop_stage="05_tsfreq", stop_reason=stages[-1].error)
     except Exception as e:
         file_count, files_txt = _run_stage_inventory(stage_dir, "numfreq")
         stages.append(
@@ -1117,7 +1214,7 @@ def main() -> int:
                 error=f"EXCEPTION: {e}",
             )
         )
-        return _finalize(exit_code=2, stop_stage="05_numfreq", stop_reason=stages[-1].error)
+        return _finalize(exit_code=2, stop_stage="05_tsfreq", stop_reason=stages[-1].error)
 
     # --- Stage 6: IRC (geomeTRIC) ---
     try:
@@ -1262,14 +1359,14 @@ def main() -> int:
                 args.freq_method,
                 args.freq_npoint,
                 args.freq_runmode,
-                args.freq_cores
+                args.freq_cores,
+                args.temperature,
+                args.pressure
             )
 
             freq_res = FreqFunc(
                 fragment=frag,
                 theory=main_theory,
-                charge=args.charge,
-                mult=args.mult,
                 printlevel=args.printlevel,
                 **freq_kwargs
             )
@@ -1385,14 +1482,14 @@ def main() -> int:
                 args.freq_method,
                 args.freq_npoint,
                 args.freq_runmode,
-                args.freq_cores
+                args.freq_cores,
+                args.temperature,
+                args.pressure
             )
 
             freq_res = FreqFunc(
                 fragment=frag,
                 theory=main_theory,
-                charge=args.charge,
-                mult=args.mult,
                 printlevel=args.printlevel,
                 **freq_kwargs
             )
@@ -1437,7 +1534,7 @@ def main() -> int:
         )
         return _finalize(exit_code=2, stop_stage="08a_freq_irc_backward", stop_reason=stages[-1].error)
 
-    # --- Stage 9: Endpoint match check (canonical SMILES cross-isomorphism) ---
+    # --- Stage 9: Endpoint match check (modular molecular matcher) ---
     try:
         stage_dir = run_dir / "09_endpoint_match"
         with _pushd(stage_dir):
@@ -1449,7 +1546,23 @@ def main() -> int:
                 if not pth.exists():
                     raise FileNotFoundError(f"Missing required XYZ for endpoint match: {pth}")
 
-            match_res = _cross_isomorphism(true_r=r_opt, true_p=p_opt, irc_r=irc_b_opt, irc_p=irc_f_opt)
+            # Create matcher from config
+            endpoint_matcher = _get_endpoint_matcher(args.endpoint_match_config)
+            if endpoint_matcher is None:
+                print(f"[WARNING] Unknown endpoint_match method: {args.endpoint_match_config.get('method')}, falling back to OpenBabel SMILES")
+                from molecular_matchers import OpenBabelSmilesMatcher
+                endpoint_matcher = OpenBabelSmilesMatcher()
+
+            print(f"[INFO] Endpoint match method: {endpoint_matcher.name}")
+
+            # Run cross-isomorphism check
+            match_res = _cross_isomorphism(
+                true_r=r_opt,
+                true_p=p_opt,
+                irc_r=irc_b_opt,
+                irc_p=irc_f_opt,
+                matcher=endpoint_matcher,
+            )
             _write_text(stage_dir / "endpoint_match.json", json.dumps(match_res, indent=2, ensure_ascii=False))
 
             stage_ok = bool(match_res.get("success")) and match_res.get("endpoint_match") == "2-end match"
@@ -1485,7 +1598,7 @@ def main() -> int:
 
     # --- Save workflow result as PKL ---
     elements_r, _ = _read_xyz_elements_coords(run_dir / "R_opt.xyz")
-    pkl_path = _save_workflow_result_pkl(run_dir, charge=args.charge, mult=args.mult, elements=elements_r)
+    pkl_path = _save_workflow_result_pkl(run_dir, charge=args.charge, mult=args.mult, elements=elements_r, temperature=args.temperature, pressure=args.pressure)
     if pkl_path:
         print(f"[OK] Saved workflow result PKL: {pkl_path}")
     else:
