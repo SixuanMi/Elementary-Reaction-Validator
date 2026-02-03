@@ -74,4 +74,4 @@ Run directory: `ash_smoketest_runs/run_YYYYMMDD_HHMMSS/`
 
 ## Version
 
-Current version: **3.3** (2026-01-31)
+Current version: **3.4** (2026-02-03)

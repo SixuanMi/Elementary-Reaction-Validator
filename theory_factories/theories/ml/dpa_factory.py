@@ -50,11 +50,12 @@ class DPAFactory(TheoryFactoryBase):
         Returns:
             DPA3Theory instance
         """
-        # Import from local interface file
+        # Import from local interfaces package
         import sys
         repo_root = Path(__file__).parent.parent.parent.parent.parent
-        sys.path.insert(0, str(repo_root))
-        from interface_DPA3 import DPA3Theory
+        if str(repo_root) not in sys.path:
+            sys.path.insert(0, str(repo_root))
+        from interfaces.interface_DPA3 import DPA3Theory
 
         if not self.validate_config():
             raise ValueError(f"Invalid DPA config: {self.config}")
@@ -63,6 +64,7 @@ class DPAFactory(TheoryFactoryBase):
             DPAdir=self.config["model_file"],
             head=self.config.get("head"),
             numcores=numcores,
+            device=self.config.get("device", "cpu"),
         )
 
     def get_default_config(self) -> Dict[str, Any]:
