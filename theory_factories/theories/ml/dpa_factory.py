@@ -52,10 +52,13 @@ class DPAFactory(TheoryFactoryBase):
         """
         # Import from local interfaces package
         import sys
-        repo_root = Path(__file__).parent.parent.parent.parent.parent
+        # Get the repository root by going up from this file location
+        # dpa_factory.py is at: repo_root/theory_factories/theories/ml/dpa_factory.py
+        # We need to go up 4 levels to get to repo_root
+        repo_root = Path(__file__).parent.parent.parent.parent.resolve()
         if str(repo_root) not in sys.path:
             sys.path.insert(0, str(repo_root))
-        from interfaces.interface_DPA3 import DPA3Theory
+        from ash_pipeline_interfaces.interface_DPA3 import DPA3Theory
 
         if not self.validate_config():
             raise ValueError(f"Invalid DPA config: {self.config}")

@@ -32,6 +32,9 @@ def _add_local_ash_to_syspath() -> Tuple[Path, Path]:
     repo_root = Path(__file__).resolve().parent
     local_ash_root = repo_root / "ash"
     sys.path.insert(0, str(local_ash_root))
+    # Also add repo_root to sys.path for local modules like interfaces
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
     return repo_root, local_ash_root
 
 
