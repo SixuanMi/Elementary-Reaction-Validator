@@ -37,7 +37,6 @@ ash_xtb_explicit_workflow_smoketest.py
 ash_xtb_workflow_config.yaml
 ash_dpa_workflow_config.yaml
 test_dpa.py
-interface_DPA3.py
 
 # Old XYZ files (only keeping R.xyz, P.xyz, TS_guess.xyz)
 xyz/reactant.xyz
